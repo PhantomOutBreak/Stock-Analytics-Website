@@ -30,6 +30,8 @@
     --color-bg-card: rgba(15, 23, 42, 0.6);
 
     /* Text Colors */
+    --color-text: #ffffff;
+    /* Slate 50 - base text (fallback) */
     --color-text-primary: #f8fafc;
     /* Slate 50 */
     --color-text-secondary: #cbd5e1;

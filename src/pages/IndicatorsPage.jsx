@@ -34,59 +34,127 @@
  */
 
 // src/pages/IndicatorsPage.jsx
-// --- React & Libraries ---
+
+// =====================================================
+// === SECTION 0: IMPORTS (นำเข้าไลบรารีและ Components) ===
+// =====================================================
+
+// React Hooks ที่ใช้ในหน้านี้:
+// - useState: จัดการ state ภายใน component (เช่น ข้อมูลกราฟ, วันที่, สถานะ loading)
+// - useCallback: สร้าง function ที่ memoize เพื่อไม่ให้ re-create ทุก render
+// - useRef: อ้างอิง DOM element หรือเก็บค่าที่ไม่ต้องการ trigger re-render
+// - useMemo: คำนวณค่าที่ซับซ้อนเฉพาะเมื่อ dependencies เปลี่ยน
 import React, { useState, useCallback, useRef, useMemo } from 'react';
+
+// Link: สำหรับ navigation ไปหน้าอื่นโดยไม่ reload หน้า (เช่น ปุ่ม "กลับหน้าหลัก")
 import { Link } from 'react-router-dom';
+
+// Recharts: ไลบรารีสร้างกราฟที่ใช้ SVG
+// - ResponsiveContainer: ทำให้กราฟปรับขนาดตาม parent container
+// - ComposedChart: กราฟที่รวมหลายประเภท (Line + Bar + Area) ในกราฟเดียว
+// - Line: เส้นกราฟ (ใช้แสดง SMA, EMA, RSI, etc.)
+// - Bar: กราฟแท่ง (ใช้แสดง Volume, MACD Histogram)
+// - Cell: กำหนดสีแต่ละ Bar แยกกัน
+// - CartesianGrid: เส้นกริดพื้นหลัง
+// - XAxis, YAxis: แกน X (วันที่) และแกน Y (ราคา/ค่า)
+// - Tooltip: กล่องข้อมูลที่โชว์เมื่อเอาเมาส์ชี้
+// - Legend: คำอธิบายสัญลักษณ์ของกราฟ
+// - ReferenceLine: เส้นอ้างอิง (เช่น เส้น Overbought 70, Oversold 30)
+// - ReferenceDot: จุดอ้างอิง (เช่น จุด Divergence)
+// - ReferenceArea: พื้นที่สี (เช่น โซน Golden Cross)
 import {
   ResponsiveContainer, ComposedChart, Line, Bar, Cell,
   CartesianGrid, XAxis, YAxis, Tooltip, Legend, ReferenceLine,
   ReferenceDot, ReferenceArea
 } from 'recharts';
+
+// CSS เฉพาะหน้า Indicators (glassmorphism, form, chart styles)
 import '../css/IndicatorsPage.css';
+
+// apiFetch: ฟังก์ชันกลางสำหรับเรียก API (จัดการ base URL, error handling)
 import { apiFetch } from '../utils/api';
+
+// === Sub-Components สำหรับแต่ละกราฟ ===
+// PriceChart: กราฟราคาหลัก (Recharts) พร้อม SMA/EMA/BB/Fibonacci overlays
 import PriceChart from '../Component/Indicators/PriceChart';
+// VolumeChart: กราฟปริมาณการซื้อขาย (แท่งสีเขียว/แดง)
 import VolumeChart from '../Component/Indicators/VolumeChart';
+// RsiChart: กราฟ RSI (0-100) พร้อม Smoothing, Bollinger Bands, Divergence markers
 import RsiChart from '../Component/Indicators/RsiChart';
+// MacdHistogramChart: กราฟ MACD Histogram (แท่งบวก/ลบ)
 import MacdHistogramChart from '../Component/Indicators/MacdHistogramChart';
+// ZoomControls: ปุ่มควบคุม Zoom (ซูมเข้า/ออก/รีเซ็ต) + ช่วงข้อมูลที่แสดง
 import ZoomControls from '../Component/Indicators/ZoomControls';
+// VerticalScaleSlider: ตัวเลื่อนปรับขนาดความสูงกราฟ (แนวตั้ง)
 import VerticalScaleSlider from '../Component/Indicators/VerticalScaleSlider';
 
-// --- Helpers & Utilities (Section 1) ---
+// =====================================================
+// === SECTION 1: HELPER FUNCTIONS (ฟังก์ชันช่วยเหลือ) ===
+// =====================================================
+
+/**
+ * parseISODate - แปลง string วันที่ ISO ("2024-01-15") เป็น Date object
+ * @param {string} iso - วันที่ในรูปแบบ ISO (YYYY-MM-DD)
+ * @returns {Date|null} - Date object หรือ null ถ้าแปลงไม่ได้
+ * 
+ * หมายเหตุ: เพิ่ม "T00:00:00Z" เพื่อบังคับให้เป็น UTC timezone
+ * ป้องกันปัญหา timezone ที่อาจทำให้วันที่เลื่อน ±1 วัน
+ */
 const parseISODate = (iso) => {
-  if (!iso) return null;
-  const d = new Date(`${iso}T00:00:00Z`);
-  return Number.isNaN(d.getTime()) ? null : d;
+  if (!iso) return null;                    // ถ้าไม่มีค่า → return null
+  const d = new Date(`${iso}T00:00:00Z`);   // สร้าง Date object จาก ISO string + UTC
+  return Number.isNaN(d.getTime()) ? null : d; // ตรวจสอบว่า Date ถูกต้อง (ไม่ใช่ Invalid Date)
 };
 
+/**
+ * calculateDateRangeInDays - คำนวณจำนวนวันระหว่างสองวันที่
+ * @param {string} start - วันเริ่มต้น (ISO format)
+ * @param {string} end - วันสิ้นสุด (ISO format)
+ * @returns {number} - จำนวนวัน (รวมวันเริ่มต้นและสิ้นสุด)
+ * 
+ * ตัวอย่าง: calculateDateRangeInDays('2024-01-01', '2024-01-03') → 3 วัน
+ * สูตร: (วันสิ้นสุด - วันเริ่มต้น) / มิลลิวินาทีต่อวัน + 1
+ */
 const calculateDateRangeInDays = (start, end) => {
-  if (!start || !end) return 0;
-  const s = parseISODate(start);
-  const e = parseISODate(end);
-  if (!s || !e) return 0;
-  return Math.floor((e - s) / (24 * 60 * 60 * 1000)) + 1;
+  if (!start || !end) return 0;           // ถ้าไม่มีวันเริ่มหรือสิ้นสุด → 0 วัน
+  const s = parseISODate(start);          // แปลงวันเริ่มต้นเป็น Date
+  const e = parseISODate(end);            // แปลงวันสิ้นสุดเป็น Date
+  if (!s || !e) return 0;                 // ถ้าแปลงไม่ได้ → 0 วัน
+  return Math.floor((e - s) / (24 * 60 * 60 * 1000)) + 1; // คำนวณจำนวนวัน (24ชม × 60นาที × 60วิ × 1000ms)
 };
 
+/**
+ * PRESET_RANGES - ตัวเลือกช่วงเวลาที่ตั้งไว้ล่วงหน้า
+ * 
+ * แต่ละ preset มี:
+ * - id: รหัสเฉพาะ (ใช้เป็น key และเช็คว่าปุ่มไหนถูกเลือก)
+ * - label: ข้อความที่แสดงบนปุ่ม
+ * - getRange(): ฟังก์ชันที่คำนวณวันเริ่ม/สิ้นสุดจากวันปัจจุบัน
+ *   return { start: 'YYYY-MM-DD', end: 'YYYY-MM-DD' }
+ * 
+ * ใช้ใน UI เป็นปุ่มเร็วเลือกช่วงเวลา (1 สัปดาห์, 1 เดือน, 3 เดือน, YTD, 1 ปี)
+ */
 const PRESET_RANGES = [
   {
-    id: 'week1',
+    id: 'week1',           // ช่วง 1 สัปดาห์
     label: '1 สัปดาห์',
     getRange: () => {
-      const end = new Date();
-      const start = new Date(end);
-      start.setDate(start.getDate() - 7);
+      const end = new Date();                         // วันนี้
+      const start = new Date(end);                    // clone วันนี้
+      start.setDate(start.getDate() - 7);             // ลบ 7 วัน
       return {
-        start: start.toISOString().split('T')[0],
+        start: start.toISOString().split('T')[0],     // แปลงเป็น 'YYYY-MM-DD'
         end: end.toISOString().split('T')[0],
       };
     },
   },
   {
-    id: 'month1',
+    id: 'month1',          // ช่วง 1 เดือน
     label: '1 เดือน',
     getRange: () => {
       const end = new Date();
       const start = new Date(end);
-      start.setMonth(start.getMonth() - 1);
+      start.setMonth(start.getMonth() - 1);           // ลบ 1 เดือน
       return {
         start: start.toISOString().split('T')[0],
         end: end.toISOString().split('T')[0],
@@ -94,12 +162,12 @@ const PRESET_RANGES = [
     },
   },
   {
-    id: 'month3',
+    id: 'month3',          // ช่วง 3 เดือน
     label: '3 เดือน',
     getRange: () => {
       const end = new Date();
       const start = new Date(end);
-      start.setMonth(start.getMonth() - 3);
+      start.setMonth(start.getMonth() - 3);           // ลบ 3 เดือน
       return {
         start: start.toISOString().split('T')[0],
         end: end.toISOString().split('T')[0],
@@ -107,11 +175,11 @@ const PRESET_RANGES = [
     },
   },
   {
-    id: 'ytd',
+    id: 'ytd',             // YTD = Year-To-Date (ตั้งแต่ต้นปีจนถึงวันนี้)
     label: 'YTD',
     getRange: () => {
       const end = new Date();
-      const start = new Date(end.getFullYear(), 0, 1);
+      const start = new Date(end.getFullYear(), 0, 1); // 1 มกราคม ของปีปัจจุบัน
       return {
         start: start.toISOString().split('T')[0],
         end: end.toISOString().split('T')[0],
@@ -119,12 +187,12 @@ const PRESET_RANGES = [
     },
   },
   {
-    id: 'year1',
+    id: 'year1',           // ช่วง 1 ปี
     label: '1 ปี',
     getRange: () => {
       const end = new Date();
       const start = new Date(end);
-      start.setFullYear(start.getFullYear() - 1);
+      start.setFullYear(start.getFullYear() - 1);     // ลบ 1 ปี
       return {
         start: start.toISOString().split('T')[0],
         end: end.toISOString().split('T')[0],
@@ -133,53 +201,97 @@ const PRESET_RANGES = [
   },
 ];
 
+/**
+ * RSI_SETTINGS - ค่าคงที่สำหรับการคำนวณ RSI และฟีเจอร์เสริม
+ * 
+ * ค่าเหล่านี้กำหนดพฤติกรรมของ RSI indicator ทั้งหมด:
+ * - length: จำนวน period สำหรับคำนวณ RSI (ค่ามาตรฐาน = 14 วัน)
+ * - smoothingType: วิธี Smoothing เส้น RSI ('SMA + Bollinger Bands' = เส้นเฉลี่ยพร้อมแถบ BB)
+ * - smoothingLength: จำนวน period สำหรับ Smoothing (14 วัน)
+ * - bbMultiplier: ตัวคูณส่วนเบี่ยงเบนมาตรฐานของ Bollinger Bands (2 = ±2σ)
+ * - divergence: การตั้งค่า Divergence Detection
+ *   - enabled: เปิด/ปิดการตรวจจับ Divergence
+ *   - lookbackLeft/Right: จำนวนแท่งที่ดูย้อนหลัง/ไปข้างหน้าเพื่อหาจุด Pivot
+ *   - rangeUpper/Lower: ขอบเขตบน/ล่างของ RSI ที่จะตรวจ Divergence
+ */
 const RSI_SETTINGS = {
-  length: 14,
-  smoothingType: 'SMA + Bollinger Bands',
-  smoothingLength: 14,
-  bbMultiplier: 2,
+  length: 14,                              // RSI period มาตรฐาน (Wilder ใช้ 14)
+  smoothingType: 'SMA + Bollinger Bands',  // ใช้ SMA + BB เป็น smoothing
+  smoothingLength: 14,                     // ความยาว SMA smoothing
+  bbMultiplier: 2,                         // BB = SMA ± 2 × Standard Deviation
   divergence: {
-    enabled: true,
-    lookbackLeft: 5,
-    lookbackRight: 5,
-    rangeUpper: 60,
-    rangeLower: 5
+    enabled: true,          // เปิดใช้การตรวจจับ Divergence
+    lookbackLeft: 5,        // ดูย้อนหลัง 5 แท่งเพื่อยืนยัน Pivot
+    lookbackRight: 5,       // ดูไปอีก 5 แท่งเพื่อยืนยัน Pivot
+    rangeUpper: 60,         // ขอบบนของ RSI ที่ตรวจ Bearish Divergence
+    rangeLower: 5           // ขอบล่างของ RSI ที่ตรวจ Bullish Divergence
   }
 };
 
-// --- Calculation Functions (Section 2) ---
+// =====================================================
+// === SECTION 2: CALCULATION FUNCTIONS (คำนวณ Indicators) ===
+// =====================================================
+
+/**
+ * fetchStockHistory - ดึงข้อมูลราคาหุ้นย้อนหลังจาก Backend API
+ * @param {string} symbol - ชื่อหุ้น (เช่น 'PTT', 'AAPL')
+ * @param {string} startDate - วันเริ่มต้น (YYYY-MM-DD)
+ * @param {string} endDate - วันสิ้นสุด (YYYY-MM-DD)
+ * @returns {Promise<Object>} - { history: [...], currency: 'THB'|'USD' }
+ */
 async function fetchStockHistory(symbol, startDate, endDate) {
-  const params = new URLSearchParams();
-  if (startDate) params.append('startDate', startDate);
-  if (endDate) params.append('endDate', endDate);
-  const query = params.toString();
-  return apiFetch(`/api/stock/history/${symbol}${query ? `?${query}` : ''}`);
+  const params = new URLSearchParams();           // สร้าง query string builder
+  if (startDate) params.append('startDate', startDate); // เพิ่ม startDate ถ้ามี
+  if (endDate) params.append('endDate', endDate);       // เพิ่ม endDate ถ้ามี
+  const query = params.toString();                // แปลงเป็น string "startDate=...&endDate=..."
+  return apiFetch(`/api/stock/history/${symbol}${query ? `?${query}` : ''}`); // เรียก API
 }
 
+/**
+ * calculateSMA - คำนวณ Simple Moving Average (ค่าเฉลี่ยเคลื่อนที่แบบธรรมดา)
+ * @param {Array} data - ข้อมูลราคาหุ้น [{date, close}, ...]
+ * @param {number} period - จำนวน period (เช่น 10, 50, 100, 200 วัน)
+ * @returns {Array|null} - [{date, value}, ...] หรือ null ถ้าข้อมูลไม่พอ
+ * 
+ * สูตร: SMA = (ผลรวมราคาปิด N วัน) / N
+ * ใช้เทคนิค Sliding Window: เพิ่มค่าใหม่เข้า + ลบค่าเก่าออก → O(n)
+ */
 const calculateSMA = (data, period) => {
-  if (!Array.isArray(data) || data.length < period) return null;
-  const out = [];
-  let sum = 0;
+  if (!Array.isArray(data) || data.length < period) return null; // ข้อมูลไม่พอ
+  const out = [];       // ผลลัพธ์ SMA
+  let sum = 0;          // ผลรวมสะสม (sliding window)
   for (let i = 0; i < data.length; i++) {
-    sum += data[i].close;
-    if (i >= period) sum -= data[i - period].close;
-    if (i >= period - 1) {
+    sum += data[i].close;                          // เพิ่มราคาปิดวันปัจจุบัน
+    if (i >= period) sum -= data[i - period].close; // ลบราคาปิดที่หลุดออกจาก window
+    if (i >= period - 1) {                          // เมื่อมีข้อมูลครบ period แล้ว
       out.push({
         date: data[i].date,
-        value: sum / period
+        value: sum / period                         // ค่าเฉลี่ย = ผลรวม / จำนวน period
       });
     }
   }
   return out;
 };
 
+/**
+ * calculateEMA - คำนวณ Exponential Moving Average (ค่าเฉลี่ยเคลื่อนที่แบบเลขชี้กำลัง)
+ * @param {Array} data - ข้อมูลราคาหุ้น [{date, close}, ...]
+ * @param {number} period - จำนวน period
+ * @returns {Array|null} - [{date, value}, ...]
+ * 
+ * สูตร: EMA = ราคาปิดวันนี้ × k + EMA เมื่อวาน × (1-k)
+ * โดยที่ k (smoothing factor) = 2 / (period + 1)
+ * EMA ให้น้ำหนักกับข้อมูลล่าสุดมากกว่า SMA → ตอบสนองต่อราคาเร็วกว่า
+ */
 const calculateEMA = (data, period) => {
-  if (!Array.isArray(data) || data.length < period) return null;
-  const out = [];
-  const k = 2 / (period + 1);
+  if (!Array.isArray(data) || data.length < period) return null; // ข้อมูลไม่พอ
+  const out = [];                                                // ผลลัพธ์ EMA
+  const k = 2 / (period + 1);                                   // k = smoothing factor
+  // ค่า EMA เริ่มต้น = SMA ของ N วันแรก (เป็น seed value)
   let ema = data.slice(0, period).reduce((s, d) => s + d.close, 0) / period;
   for (let i = period - 1; i < data.length; i++) {
     if (i > period - 1) {
+      // คำนวณ EMA: ราคาปิด × k + EMA ก่อนหน้า × (1-k)
       ema = data[i].close * k + ema * (1 - k);
     }
     out.push({
@@ -190,123 +302,228 @@ const calculateEMA = (data, period) => {
   return out;
 };
 
+/**
+ * calculateRSI - คำนวณ Relative Strength Index (ดัชนีความแข็งแกร่งสัมพัทธ์)
+ * @param {Array} data - ข้อมูลราคาหุ้น [{date, close}, ...]
+ * @param {number} period - จำนวน period (ค่าเริ่มต้น = 14)
+ * @returns {Array|null} - [{date, value(0-100)}, ...]
+ * 
+ * สูตร: RSI = 100 - (100 / (1 + RS))
+ * โดยที่ RS = Average Gain / Average Loss
+ * 
+ * ใช้วิธี Wilder Smoothing (exponential):
+ * AvgGain = (AvgGain ก่อนหน้า × (period-1) + Gain ปัจจุบัน) / period
+ * AvgLoss = (AvgLoss ก่อนหน้า × (period-1) + Loss ปัจจุบัน) / period
+ * 
+ * ค่า RSI:
+ * - > 70: Overbought (ซื้อมากเกินไป → อาจจะลง)
+ * - < 30: Oversold (ขายมากเกินไป → อาจจะขึ้น)
+ */
 const calculateRSI = (data, period = 14) => {
-  if (!Array.isArray(data) || data.length < period + 1) return null;
+  if (!Array.isArray(data) || data.length < period + 1) return null; // ต้องมีอย่างน้อย period+1 จุด
+
+  // === ขั้นตอน 1: คำนวณ Price Change ของแต่ละวัน ===
   const changes = [];
   for (let i = 1; i < data.length; i++) {
-    changes.push(data[i].close - data[i - 1].close);
+    changes.push(data[i].close - data[i - 1].close); // การเปลี่ยนแปลงราคา = วันนี้ - เมื่อวาน
   }
+
   const out = [];
   let gains = 0, losses = 0;
+
+  // === ขั้นตอน 2: คำนวณ Average Gain/Loss เริ่มต้น (N วันแรก) ===
   for (let i = 0; i < period; i++) {
-    if (changes[i] > 0) gains += changes[i];
-    else losses += -changes[i];
+    if (changes[i] > 0) gains += changes[i];    // ถ้าราคาขึ้น → สะสม gain
+    else losses += -changes[i];                  // ถ้าราคาลง → สะสม loss (เป็นค่าบวก)
   }
-  let avgGain = gains / period;
-  let avgLoss = losses / period;
+  let avgGain = gains / period;  // ค่าเฉลี่ย gain เริ่มต้น
+  let avgLoss = losses / period; // ค่าเฉลี่ย loss เริ่มต้น
+
+  // === ขั้นตอน 3: คำนวณ RSI แต่ละวันด้วย Wilder Smoothing ===
   for (let i = period; i < changes.length; i++) {
     const change = changes[i];
     if (change > 0) {
+      // วันนี้ราคาขึ้น: avgGain เพิ่ม, avgLoss ลดลง (decay)
       avgGain = (avgGain * (period - 1) + change) / period;
       avgLoss = (avgLoss * (period - 1)) / period;
     } else {
+      // วันนี้ราคาลง: avgGain ลดลง (decay), avgLoss เพิ่ม
       avgGain = (avgGain * (period - 1)) / period;
-      avgLoss = (avgLoss * (period - 1) - change) / period;
+      avgLoss = (avgLoss * (period - 1) - change) / period; // -change กลับเป็นค่าบวก
     }
-    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-    const rsi = 100 - (100 / (1 + rs));
+    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss; // RS = AvgGain/AvgLoss (ป้องกันหารศูนย์)
+    const rsi = 100 - (100 / (1 + rs));                  // แปลง RS เป็น RSI (0-100)
     out.push({
-      date: data[i + 1].date,
+      date: data[i + 1].date,  // offset +1 เพราะ changes เริ่มต้นจาก index 1
       value: rsi
     });
   }
   return out;
 };
 
+/**
+ * calculateMACD - คำนวณ Moving Average Convergence Divergence
+ * @param {Array} data - ข้อมูลราคาหุ้น [{date, close}, ...]
+ * @param {number} fast - EMA เร็ว (ค่าเริ่มต้น = 12)
+ * @param {number} slow - EMA ช้า (ค่าเริ่มต้น = 26)
+ * @param {number} sig - Signal line period (ค่าเริ่มต้น = 9)
+ * @returns {Object|null} - { macdLine, signalLine, histogram }
+ * 
+ * MACD ประกอบด้วย 3 ส่วน:
+ * 1. MACD Line = EMA(12) - EMA(26)         → ทิศทาง momentum
+ * 2. Signal Line = EMA(9) ของ MACD Line    → สัญญาณซื้อ/ขาย
+ * 3. Histogram = MACD Line - Signal Line   → ความแรงของ momentum
+ * 
+ * สัญญาณ:
+ * - MACD ตัด Signal จากล่างขึ้นบน → Bullish (ซื้อ)
+ * - MACD ตัด Signal จากบนลงล่าง → Bearish (ขาย)
+ */
 const calculateMACD = (data, fast = 12, slow = 26, sig = 9) => {
-  if (!Array.isArray(data) || data.length < slow + sig) return null;
+  if (!Array.isArray(data) || data.length < slow + sig) return null; // ต้องมีข้อมูลอย่างน้อย slow+sig จุด
+
+  // === ขั้นตอน 1: คำนวณ EMA เร็ว (12) และ EMA ช้า (26) ===
   const emaFast = calculateEMA(data, fast);
   const emaSlow = calculateEMA(data, slow);
   if (!emaFast || !emaSlow) return null;
+
+  // === ขั้นตอน 2: คำนวณ MACD Line = EMA Fast - EMA Slow ===
   const macdLine = [];
-  const macdMap = new Map(emaFast.map(e => [e.date.getTime(), e.value]));
+  const macdMap = new Map(emaFast.map(e => [e.date.getTime(), e.value])); // สร้าง Map สำหรับ lookup เร็ว
   const slowMap = new Map(emaSlow.map(e => [e.date.getTime(), e.value]));
   for (let i = slow - 1; i < data.length; i++) {
     const ts = data[i].date.getTime();
-    const m = (macdMap.get(ts) ?? 0) - (slowMap.get(ts) ?? 0);
+    const m = (macdMap.get(ts) ?? 0) - (slowMap.get(ts) ?? 0); // MACD = EMA Fast - EMA Slow
     macdLine.push({ date: data[i].date, value: m });
   }
+
+  // === ขั้นตอน 3: คำนวณ Signal Line = EMA(9) ของ MACD Line ===
+  // แปลง macdLine ให้มี .close เพื่อใช้กับ calculateEMA
   const signalLine = calculateEMA(macdLine.map(m => ({ ...m, close: m.value })), sig);
   if (!signalLine) return null;
+
+  // === ขั้นตอน 4: คำนวณ Histogram = MACD Line - Signal Line ===
   const histogram = [];
   const sigMap = new Map(signalLine.map(s => [s.date.getTime(), s.value]));
   for (const ml of macdLine) {
     const ts = ml.date.getTime();
-    const h = ml.value - (sigMap.get(ts) ?? 0);
+    const h = ml.value - (sigMap.get(ts) ?? 0); // Histogram = MACD - Signal
     histogram.push({ date: ml.date, value: h });
   }
   return { macdLine, signalLine, histogram };
 };
 
+/**
+ * calculateBollingerBands - คำนวณแถบ Bollinger Bands
+ * @param {Array} data - ข้อมูลราคาหุ้น [{date, close}, ...]
+ * @param {number} period - จำนวน period (ค่าเริ่มต้น = 20)
+ * @param {number} devs - จำนวนส่วนเบี่ยงเบนมาตรฐาน (ค่าเริ่มต้น = 2)
+ * @returns {Array|null} - [{date, upper, middle, lower}, ...]
+ * 
+ * BB ประกอบด้วย 3 เส้น:
+ * - Middle Band = SMA(20) → แนวรับแนวต้านกลาง
+ * - Upper Band = Middle + 2σ → แนวต้านบน (ราคาแพง)
+ * - Lower Band = Middle - 2σ → แนวรับล่าง (ราคาถูก)
+ * σ = Standard Deviation ของราคาปิด N วัน
+ * 
+ * เมื่อแถบแคบ (squeeze) → ราคาจะเคลื่อนที่รุนแรง (breakout)
+ * เมื่อราคาทะลุ Upper → อาจ Overbought, ทะลุ Lower → อาจ Oversold
+ */
 const calculateBollingerBands = (data, period = 20, devs = 2) => {
   if (!Array.isArray(data) || data.length < period) return null;
+  // ฟังก์ชันช่วยคำนวณ Standard Deviation
   const calculateSD = arr => {
-    const mean = arr.reduce((s, v) => s + v, 0) / arr.length;
-    return Math.sqrt(arr.reduce((s, v) => s + (v - mean) ** 2, 0) / arr.length);
+    const mean = arr.reduce((s, v) => s + v, 0) / arr.length; // ค่าเฉลี่ย
+    return Math.sqrt(arr.reduce((s, v) => s + (v - mean) ** 2, 0) / arr.length); // √(Σ(x-μ)²/N)
   };
   const bb = [];
   for (let i = period - 1; i < data.length; i++) {
-    const slice = data.slice(i - period + 1, i + 1).map(d => d.close);
-    const middle = slice.reduce((s, v) => s + v, 0) / period;
-    const sd = calculateSD(slice);
+    const slice = data.slice(i - period + 1, i + 1).map(d => d.close); // ราคาปิด N วัน
+    const middle = slice.reduce((s, v) => s + v, 0) / period;          // Middle = SMA
+    const sd = calculateSD(slice);                                       // Standard Deviation
     bb.push({
       date: data[i].date,
-      upper: middle + devs * sd,
-      middle,
-      lower: middle - devs * sd
+      upper: middle + devs * sd,  // Upper Band = Middle + 2σ
+      middle,                      // Middle Band = SMA(20)
+      lower: middle - devs * sd   // Lower Band = Middle - 2σ
     });
   }
   return bb;
 };
 
-// เพิ่ม helper: Resample data ถ้าเยอะเกินไป (ลด labels overlap)
+/**
+ * resampleData - ลดจำนวนจุดข้อมูลเพื่อป้องกัน labels ซ้อนทับกัน
+ * @param {Array} data - ข้อมูลต้นฉบับ
+ * @param {number} maxPoints - จำนวนจุดสูงสุดที่ต้องการ (ค่าเริ่มต้น = 50)
+ * @returns {Array} - ข้อมูลที่ถูก resample แล้ว
+ * 
+ * ใช้วิธี: เก็บทุกๆ N จุด (step) + จุดสุดท้ายเสมอ
+ */
 const resampleData = (data, maxPoints = 50) => {
-  if (!Array.isArray(data) || data.length <= maxPoints) return data;
-  const step = Math.ceil(data.length / maxPoints);
-  return data.filter((_, i) => i % step === 0 || i === data.length - 1);
+  if (!Array.isArray(data) || data.length <= maxPoints) return data; // ไม่ต้อง resample
+  const step = Math.ceil(data.length / maxPoints);                   // คำนวณ step size
+  return data.filter((_, i) => i % step === 0 || i === data.length - 1); // เก็บทุก step + จุดสุดท้าย
 };
 
-// Calculate Fibonacci Retracement Levels
-// Calculate Fibonacci Retracement Levels
-// Calculate Fibonacci Retracement Levels
+/**
+ * calculateFibonacci - คำนวณระดับ Fibonacci Retracement
+ * @param {Array} data - ข้อมูลราคาหุ้น [{date, close}, ...]
+ * @returns {Object|null} - { high, low, levels: [{level, value, color}, ...] }
+ * 
+ * Fibonacci Retracement ใช้หาแนวรับ-แนวต้านจากสัดส่วน Fibonacci:
+ * - 0% (High): จุดสูงสุด → แนวต้านหลัก
+ * - 23.6%, 38.2%, 50%, 61.8%, 78.6%: ระดับ retracement
+ * - 100% (Low): จุดต่ำสุด → แนวรับหลัก
+ * 
+ * ระดับ 61.8% (Golden Ratio) เป็นระดับที่สำคัญที่สุด
+ * สูตร: ระดับ = High - (High - Low) × เปอร์เซ็นต์
+ */
 const calculateFibonacci = (data) => {
   if (!Array.isArray(data) || data.length < 2) return null;
-  const closes = data.map(d => d.close).filter(v => typeof v === 'number');
+  const closes = data.map(d => d.close).filter(v => typeof v === 'number'); // กรองเฉพาะตัวเลข
   if (closes.length < 2) return null;
-  const high = Math.max(...closes);
-  const low = Math.min(...closes);
-  const diff = high - low;
+  const high = Math.max(...closes);  // จุดสูงสุดในช่วง
+  const low = Math.min(...closes);   // จุดต่ำสุดในช่วง
+  const diff = high - low;           // ช่วงราคา (High - Low)
 
-  // Define levels with specific colors and labels
+  // กำหนดแต่ละระดับพร้อมสี (สีแดง = Low, สีน้ำเงิน = High, สีทอง = Golden Ratio)
   const levels = [
-    { level: '100% (Low)', value: low, color: '#ff5252' },     // Red for Low
+    { level: '100% (Low)', value: low, color: '#ff5252' },
     { level: '78.6%', value: high - diff * 0.786, color: '#ffb74d' },
-    { level: '61.8%', value: high - diff * 0.618, color: '#ffd740' }, // Golden
-    { level: '50%', value: high - diff * 0.5, color: '#aeea00' },     // Center
+    { level: '61.8%', value: high - diff * 0.618, color: '#ffd740' },   // Golden Ratio (สำคัญที่สุด)
+    { level: '50%', value: high - diff * 0.5, color: '#aeea00' },
     { level: '38.2%', value: high - diff * 0.382, color: '#ffd740' },
     { level: '23.6%', value: high - diff * 0.236, color: '#ffb74d' },
-    { level: '0% (High)', value: high, color: '#448aff' }      // Blue for High
+    { level: '0% (High)', value: high, color: '#448aff' }
   ];
   return { high, low, levels };
 };
 
-// --- New RSI Helpers ---
+// =====================================================
+// === RSI HELPERS (ฟังก์ชันช่วยสำหรับ RSI) ===
+// =====================================================
 
+/**
+ * calculateStDev - คำนวณส่วนเบี่ยงเบนมาตรฐาน (Standard Deviation)
+ * ใช้สำหรับ Bollinger Bands ของ RSI Smoothing
+ */
 const calculateStDev = (arr) => {
-  const mean = arr.reduce((s, v) => s + v, 0) / arr.length;
-  return Math.sqrt(arr.reduce((s, v) => s + (v - mean) ** 2, 0) / arr.length);
+  const mean = arr.reduce((s, v) => s + v, 0) / arr.length; // ค่าเฉลี่ย (μ)
+  return Math.sqrt(arr.reduce((s, v) => s + (v - mean) ** 2, 0) / arr.length); // √(Σ(x-μ)²/N)
 };
 
+/**
+ * calculateRSISmoothing - เพิ่มเส้น Smoothing (MA) และ Bollinger Bands ลงบน RSI
+ * @param {Array} rsiData - ข้อมูล RSI [{date, value}, ...]
+ * @param {string} type - ประเภท Smoothing ('SMA', 'EMA', หรือ 'SMA + Bollinger Bands')
+ * @param {number} length - ความยาว period ของ Smoothing
+ * @param {number} mult - ตัวคูณ Standard Deviation สำหรับ BB (เช่น 2 = ±2σ)
+ * @returns {Array} - RSI data เดิม + เพิ่ม fields: smoothing, smoothingUpper, smoothingLower
+ * 
+ * ฟังก์ชันนี้เพิ่ม "เส้นกลาง" ให้ RSI เพื่อลด noise:
+ * - ถ้า type = 'SMA': เพิ่มเส้น SMA ของ RSI
+ * - ถ้า type = 'EMA': เพิ่มเส้น EMA ของ RSI
+ * - ถ้า type = 'SMA + Bollinger Bands': เพิ่มทั้ง SMA + แถบ BB ของ RSI
+ */
 const calculateRSISmoothing = (rsiData, type, length, mult) => {
   if (!rsiData || rsiData.length < length) return rsiData;
   const values = rsiData.map(d => d.value);
@@ -348,12 +565,24 @@ const calculateRSISmoothing = (rsiData, type, length, mult) => {
   });
 };
 
-const calculateDivergence = (rsiData, priceData, lookbackL = 5, lookbackR = 5) => {
-  // Need matched indices
-  // Assumes rsiData and priceData are aligned by Date or can be joined.
-  // Here we assume rsiData is derived from priceData and has same length/alignment approx.
-  // Actually rsiData starts later. We need to map by date.
+/**
+ * calculateDivergence - ตรวจจับ RSI Divergence (การแยกตัวระหว่างราคากับ RSI)
+ * @param {Array} rsiData - ข้อมูล RSI [{date, value}, ...]
+ * @param {Array} priceData - ข้อมูลราคาหุ้น [{date, high, low, close}, ...]
+ * @param {number} lookbackL - จำนวนแท่งดูย้อนหลังเพื่อหา Pivot (5)
+ * @param {number} lookbackR - จำนวนแท่งดูไปข้างหน้าเพื่อยืนยัน Pivot (5)
+ * @returns {Array} - [{date, type: 'bull'|'bear', value}, ...]
+ * 
+ * Divergence Types:
+ * - Bullish: ราคาทำ Lower Low + RSI ทำ Higher Low → ราคาอาจกลับตัวขึ้น
+ * - Bearish: ราคาทำ Higher High + RSI ทำ Lower High → ราคาอาจกลับตัวลง
+ */
+// Need matched indices
+// Assumes rsiData and priceData are aligned by Date or can be joined.
+// Here we assume rsiData is derived from priceData and has same length/alignment approx.
+// Actually rsiData starts later. We need to map by date.
 
+const calculateDivergence = (rsiData, priceData, lookbackL = 5, lookbackR = 5) => {
   if (!rsiData || !priceData) return [];
 
   const priceMap = new Map(priceData.map(p => [p.date.getTime(), p]));
@@ -417,7 +646,16 @@ const calculateDivergence = (rsiData, priceData, lookbackL = 5, lookbackR = 5) =
   return divergences;
 };
 
-// Calculate Golden Cross and Death Cross (Strict Crossover)
+/**
+ * calculateGoldenDeathCross - ตรวจหาจุด Golden Cross และ Death Cross
+ * @param {Array} data - ข้อมูลราคาหุ้น
+ * @param {Array} sma50List - SMA(50) data
+ * @param {Array} sma200List - SMA(200) data
+ * @returns {Object} - { signals: [{date, type, price}], zones: [{start, end, type}] }
+ * 
+ * - Golden Cross: SMA(50) ตัด SMA(200) จากล่างขึ้นบน → Bullish ระยะยาว
+ * - Death Cross: SMA(50) ตัด SMA(200) จากบนลงล่าง → Bearish ระยะยาว
+ */
 const calculateGoldenDeathCross = (data, sma50List, sma200List) => {
   if (!data || !sma50List || !sma200List) return { signals: [], zones: [] };
 
@@ -483,8 +721,14 @@ const calculateGoldenDeathCross = (data, sma50List, sma200List) => {
   return { signals, zones };
 };
 
-// Calculate Peak High/Low Points for Weekly, Monthly, Yearly
-// Returns an array of marker objects: { date, type: 'weeklyHigh'|'weeklyLow', value }
+/**
+ * calculatePeakPoints - หาจุดสูงสุด/ต่ำสุดของแต่ละช่วงเวลา (สัปดาห์/เดือน/ปี)
+ * @param {Array} data - ข้อมูลราคาหุ้น
+ * @param {string} periodType - 'week' | 'month' | 'year'
+ * @returns {Array} - [{date, type: 'weeklyHigh'|'weeklyLow'|..., value}, ...]
+ * 
+ * ใช้แสดงจุด High/Low ของแต่ละช่วงเวลาเป็น marker บนกราฟราคา
+ */
 const calculatePeakPoints = (data, periodType) => {
   if (!Array.isArray(data) || data.length === 0) return [];
 
@@ -550,35 +794,56 @@ const calculatePeakPoints = (data, periodType) => {
   return peaks;
 };
 
-// --- Main Component (Section 3) ---
+// =====================================================
+// === SECTION 3: MAIN COMPONENT (หน้าหลัก IndicatorsPage) ===
+// =====================================================
+
+/**
+ * IndicatorsPage - Component หลักสำหรับหน้าวิเคราะห์เทคนิค
+ * 
+ * หน้าที่ของ Component:
+ * 1. รับข้อมูลจากผู้ใช้ (ชื่อหุ้น, ช่วงวันที่)
+ * 2. ดึงข้อมูลราคาย้อนหลังจาก API
+ * 3. คำนวณ Indicators ทั้งหมด (SMA, EMA, RSI, MACD, BB, Fibonacci)
+ * 4. แสดงผลเป็นกราฟแบบ Interactive
+ */
 export default function IndicatorsPage() {
-  const [inputSymbol, setInputSymbol] = useState('');
-  const [startDate, setStartDate] = useState(new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
-  const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
-  const [selectedPreset, setSelectedPreset] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [displayRange, setDisplayRange] = useState({ start: '', end: '' });
-  const [chartData, setChartData] = useState({});
-  const [currency, setCurrency] = useState('');
-  const [heightScale, setHeightScale] = useState(1.0);
-  const [widthPct, setWidthPct] = useState(90);
-  const [pricePadPct, setPricePadPct] = useState(0.06);
+  // === State: ข้อมูลที่ผู้ใช้กรอก ===
+  const [inputSymbol, setInputSymbol] = useState('');         // ชื่อหุ้นที่กรอก (เช่น 'PTT', 'AAPL')
+  const [startDate, setStartDate] = useState(new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]); // วันเริ่มต้น (default = 90 วันก่อน)
+  const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);   // วันสิ้นสุด (default = วันนี้)
+  const [selectedPreset, setSelectedPreset] = useState(null); // preset ที่ถูกเลือก (null = กำหนดเอง)
+
+  // === State: สถานะการทำงาน ===
+  const [loading, setLoading] = useState(false);   // กำลังโหลดข้อมูลอยู่หรือไม่
+  const [error, setError] = useState('');           // ข้อความ error (ว่าง = ไม่มี error)
+
+  // === State: ข้อมูลที่ประมวลผลแล้ว ===
+  const [displayRange, setDisplayRange] = useState({ start: '', end: '' }); // ช่วงวันที่ที่แสดงอยู่จริง
+  const [chartData, setChartData] = useState({});   // ข้อมูลกราฟทั้งหมด (price, volume, rsi, macd, etc.)
+  const [currency, setCurrency] = useState('');      // สกุลเงิน ('THB' หรือ 'USD')
+
+  // === State: การตั้งค่า UI ===
+  const [heightScale, setHeightScale] = useState(1.0);  // ตัวคูณความสูงกราฟ (VerticalScaleSlider)
+  const [widthPct, setWidthPct] = useState(90);          // ความกว้างกราฟ (% ของ container)
+  const [pricePadPct, setPricePadPct] = useState(0.06);  // padding ด้านบน/ล่างของกราฟราคา (6%)
+
+  // === State: การแสดง/ซ่อน Indicators ===
   const [visibleIndicators, setVisibleIndicators] = useState({
-    sma: true,
-    ema: true,
-    bb: true,
-    fib: true,
-    goldenDeath: true,
-    weeklyHighLow: false,
-    monthlyHighLow: false,
-    yearlyHighLow: false,
-    volume: true,
-    rsi: true,
-    macd: true
+    sma: true,            // SMA (Simple Moving Average) — เปิดอยู่
+    ema: true,            // EMA (Exponential Moving Average) — เปิดอยู่
+    bb: true,             // Bollinger Bands — เปิดอยู่
+    fib: true,            // Fibonacci Retracement — เปิดอยู่
+    goldenDeath: true,    // Golden/Death Cross — เปิดอยู่
+    weeklyHighLow: false, // Weekly High/Low — ปิดอยู่ (default)
+    monthlyHighLow: false,// Monthly High/Low — ปิดอยู่
+    yearlyHighLow: false, // Yearly High/Low — ปิดอยู่
+    volume: true,         // Volume Bars — เปิดอยู่
+    rsi: true,            // RSI — เปิดอยู่
+    macd: true            // MACD — เปิดอยู่
   });
-  const abortRef = useRef(null);
-  const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
+  const abortRef = useRef(null);  // ref สำหรับ AbortController (ยกเลิก API request ก่อนหน้า)
+  const [showIndicatorPanel, setShowIndicatorPanel] = useState(false); // เปิด/ปิด panel ตั้งค่า indicators
 
   // =====================================================
   // === Zoom & Pan State (TradingView-style Interaction) ===
