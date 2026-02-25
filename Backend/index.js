@@ -595,7 +595,7 @@ const allowedOrigins = [
   'http://localhost:5173',          // Vite Dev Server (development)
   'http://localhost:7860',          // Backend Dev (development)
   'https://stock-calculator-yaf0.onrender.com', // Backend URL
-  'https://stock-calculator-murex.vercel.app/' //Frontend URL
+  'https://stock-calculator-murex.vercel.app', // Frontend URL (Vercel)
 ];
 
 app.use(cors({
