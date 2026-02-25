@@ -8,6 +8,25 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import dotenv from 'dotenv';
 
+// =====================================================
+// 🔒 Security Imports (V2, V6)
+// =====================================================
+// helmet: เพิ่ม HTTP Security Headers อัตโนมัติ เช่น
+//   - Content-Security-Policy (ป้องกัน XSS)
+//   - Strict-Transport-Security (บังคับ HTTPS)
+//   - X-Frame-Options (ป้องกัน Clickjacking)
+//   - X-Content-Type-Options (ป้องกัน MIME Sniffing)
+// อ้างอิง: OWASP A05:2021 - Security Misconfiguration
+import helmet from 'helmet';
+
+// express-rate-limit: จำกัดจำนวน Request ต่อ IP ต่อช่วงเวลา
+// ป้องกัน:
+//   - DDoS / Brute-force Attack
+//   - API Abuse (ดูดข้อมูลจำนวนมาก)
+//   - Yahoo/TwelveData API ถูก rate-limit เพราะเราส่ง request มากเกินไป
+// อ้างอิง: OWASP A04:2021 - Insecure Design
+import rateLimit from 'express-rate-limit';
+
 
 // Import the custom env loader
 import { loadEnv } from './envLoader.js';
@@ -248,9 +267,12 @@ const fetchTwelveDataQuote = async (symbol) => {
     apiKey = 'demo';
   }
 
-  // Debug log to see what key is effectively used
-  const keyType = apiKey === 'demo' ? 'demo (fallback)' : `Real Key (${apiKey.substring(0, 4)}...)`;
-  console.log(`[TwelveData] Using API Key: ${keyType}`);
+  // 🔒 [V5] Security Fix: ไม่แสดง API Key (แม้บางส่วน) ใน logs
+  // ปัญหาเดิม: แสดง 4 ตัวแรกของ API Key → Attacker ใช้ลด search space ในการ brute-force
+  // แก้ไข: แสดงแค่สถานะ (configured/demo) โดยไม่เปิดเผยค่าจริง
+  // อ้างอิง: OWASP A09:2021 - Security Logging and Monitoring Failures
+  const keyStatus = apiKey === 'demo' ? 'demo (fallback)' : 'configured';
+  console.log(`[TwelveData] API Key status: ${keyStatus}`);
 
   // Adjust symbol for TwelveData format (Thai stocks need :SET)
   const tdSymbol = formatTwelveDataSymbol(symbol);
@@ -301,9 +323,9 @@ const fetchTwelveDataHistory = async (symbol, period1, period2) => {
     apiKey = 'demo';
   }
 
-  // Debug log
-  const keyType = apiKey === 'demo' ? 'demo (fallback)' : `Real Key (${apiKey.substring(0, 4)}...)`;
-  console.log(`[TwelveData] History Request - Using API Key: ${keyType}`);
+  // 🔒 [V5] Security Fix: ซ่อน API Key จาก logs (เหมือน fetchTwelveDataQuote)
+  const keyStatus = apiKey === 'demo' ? 'demo (fallback)' : 'configured';
+  console.log(`[TwelveData] History Request - API Key status: ${keyStatus}`);
   // Adjust symbol for TwelveData format (Thai stocks need :SET)
   const tdSymbol = formatTwelveDataSymbol(symbol);
 
@@ -504,34 +526,177 @@ const enrichCurrency = async (events) => {
 // ======================================================
 
 const app = express();
-// แทนที่ CORS ปัจจุบันด้วยแบบง่าย (development / quick test)
-app.use(cors());
+
+// =====================================================
+// 🔒 [V6] Security Headers — Helmet Middleware
+// =====================================================
+// Helmet ตั้งค่า HTTP Response Headers โดยอัตโนมัติ:
+//
+// 1. Content-Security-Policy (CSP):
+//    - ป้องกัน XSS (Cross-Site Scripting) โดยควบคุมว่า Browser
+//      อนุญาตให้โหลด script/style/image จากแหล่งไหนได้บ้าง
+//    - defaultSrc: ["'self'"] → อนุญาตเฉพาะจาก domain ตัวเอง
+//    - scriptSrc: ["'self'"] → ไม่ยอมให้รัน inline <script>
+//    - styleSrc: ต้องมี 'unsafe-inline' เพราะ React ใช้ inline styles
+//    - connectSrc: อนุญาตให้ fetch ไปยัง TwelveData / Yahoo API เท่านั้น
+//
+// 2. Strict-Transport-Security (HSTS):
+//    - บังคับให้ Browser ใช้ HTTPS เสมอ (ป้องกัน Man-in-the-Middle)
+//    - maxAge: 1 ปี → Browser จำไว้ 1 ปีว่าเว็บนี้ต้องใช้ HTTPS
+//
+// 3. X-Frame-Options: DENY
+//    - ป้องกัน Clickjacking → ไม่ให้เว็บอื่นใส่เราใน <iframe>
+//
+// 4. X-Content-Type-Options: nosniff
+//    - ป้องกัน MIME Sniffing → Browser ไม่เดา file type เอง
+//
+// อ้างอิง: OWASP A05:2021 - Security Misconfiguration
+// อ้างอิง: https://helmetjs.github.io/
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],                          // โหลด resource จาก domain ตัวเองเท่านั้น
+      scriptSrc: ["'self'"],                            // รัน script จาก domain ตัวเองเท่านั้น
+      styleSrc: ["'self'", "'unsafe-inline'"],          // อนุญาต inline styles (React จำเป็นต้องใช้)
+      imgSrc: ["'self'", "data:", "https:"],            // อนุญาต images จาก self, data URI, HTTPS
+      connectSrc: [
+        "'self'",                                       // API calls ไปที่ตัวเอง
+        "https://api.twelvedata.com",                   // TwelveData API
+        "https://query1.finance.yahoo.com"              // Yahoo Finance API
+      ],
+    },
+  },
+  crossOriginEmbedderPolicy: false,   // ปิดเพื่อไม่ให้ block Recharts SVG rendering
+  hsts: {
+    maxAge: 31536000,                  // บังคับ HTTPS นาน 1 ปี (31,536,000 วินาที)
+    includeSubDomains: true,           // รวม subdomain ด้วย
+    preload: true,                     // ลงทะเบียน HSTS Preload List ได้
+  },
+}));
+
+// =====================================================
+// 🔒 Trust Proxy Setting (สำหรับ Render.com)
+// =====================================================
+// Render.com ใช้ Reverse Proxy หน้า Express
+// ถ้าไม่ตั้งค่านี้ → req.ip จะได้ IP ของ Proxy (ไม่ใช่ IP ผู้ใช้จริง)
+// ส่งผลให้ Rate Limiter ไม่ทำงานถูกต้อง (นับทุกคนเป็น IP เดียวกัน)
+// ค่า 1 = trust proxy ตัวแรก (Render.com reverse proxy)
+app.set('trust proxy', 1);
+
+// =====================================================
+// 🔒 [V1] CORS Whitelist — เฉพาะ Domain ที่อนุญาตเท่านั้น
+// =====================================================
+// ปัญหาเดิม: app.use(cors()) → เปิดให้ทุกเว็บไซต์เรียก API ได้
+// ความเสี่ยง: เว็บมิจฉาชีพสามารถดึงข้อมูลจาก API เราไปแสดงเป็นของตัวเอง
+// ถ้ามี Login ในอนาคต → Attacker สามารถขโมย Session/Cookie ผ่าน CORS ได้
+// แก้ไข: อนุญาตเฉพาะ domain ที่เรากำหนด
+// อ้างอิง: CWE-942 (Overly Permissive CORS Policy)
+const allowedOrigins = [
+  'http://localhost:5173',          // Vite Dev Server (development)
+  'http://localhost:7860',          // Backend Dev (development)
+  'https://stock-calculator-yaf0.onrender.com', // Production URL
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // อนุญาต requests ที่ไม่มี origin (เช่น mobile apps, curl, Postman)
+    // — เพราะ tools เหล่านี้ไม่ส่ง Origin header
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    // ❌ Domain ไม่อยู่ใน whitelist → บล็อก
+    return callback(new Error('Not allowed by CORS'));
+  },
+  methods: ['GET'],          // จำกัดเฉพาะ GET (API นี้ไม่มี POST/PUT/DELETE)
+  credentials: false,        // ไม่ต้องส่ง cookies (ไม่มี Login)
+  optionsSuccessStatus: 200, // สำหรับ Legacy browsers ที่ไม่รองรับ 204
+}));
+
+// =====================================================
+// 🔒 [V2] Rate Limiting — จำกัดจำนวน Requests ต่อ IP
+// =====================================================
+// ปัญหาเดิม: ไม่มี Rate Limit → ใครก็ส่ง request กี่พันครั้งก็ได้
+// ความเสี่ยง:
+//   1) DDoS → Server ล่ม, ผู้ใช้คนอื่นเข้าไม่ได้
+//   2) Yahoo/TwelveData ban API Key ของเรา (ฝั่งเขามี rate limit)
+//   3) Render.com คิดเงินเพิ่ม (ถ้า paid plan)
+// แก้ไข: จำกัด 100 req / 15 นาที (ทั่วไป) + 30 req / 1 นาที (API routes)
+//
+// การคำนวณ Threshold:
+//   ผู้ใช้เปิดหน้าเว็บ = ~3-5 API calls (quote + history + dividends)
+//   ค้นหุ้น 10 ตัวใน 15 นาที = 10 × 5 = 50 calls
+//   Safety margin × 2 = 100 calls / 15 min → ผู้ใช้ปกติไม่มีทางโดน limit
+//
+// อ้างอิง: OWASP A04:2021 - Insecure Design
+
+// --- Global Rate Limiter: ใช้กับทุก Route ---
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,    // กรอบเวลา 15 นาที
+  max: 100,                     // สูงสุด 100 requests ต่อ IP ต่อ 15 นาที
+  standardHeaders: true,        // ส่ง RateLimit-* headers กลับให้ Client รู้
+  legacyHeaders: false,         // ไม่ส่ง X-RateLimit-* headers แบบเก่า
+  message: {
+    error: 'Too many requests from this IP. Please try again in 15 minutes.',
+    retryAfter: 15              // แนะนำให้ Client รอ 15 นาที
+  },
+});
+
+// --- API Rate Limiter: เข้มงวดกว่า สำหรับ routes ที่เรียก External API ---
+// เหตุผล: /api/ routes ทุกตัวไปเรียก Yahoo/TwelveData
+// ถ้าไม่จำกัด → API Key ของเราจะถูกฝั่ง Provider ban
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,     // กรอบเวลา 1 นาที
+  max: 30,                      // สูงสุด 30 requests ต่อ IP ต่อนาที
+  message: {
+    error: 'API rate limit exceeded. Please slow down and try again in 1 minute.',
+    retryAfter: 1
+  },
+});
+
+// เปิดใช้งาน Rate Limiters
+app.use(globalLimiter);           // ใช้กับทุก Route (รวม static files)
+app.use('/api/', apiLimiter);     // ใช้เฉพาะ /api/* (เข้มงวดกว่า)
+
 app.use(express.json());
 
-// DEBUG ROUTE: Check TwelveData Config & Connectivity
-app.get('/api/debug/info', async (req, res) => {
-  const apiKey = process.env.TWELVE_DATA_API_KEY || 'none';
-  const isDemo = apiKey === 'demo';
-  const maskedKey = isDemo ? 'demo' : (apiKey.length > 4 ? apiKey.substring(0, 4) + '...' : apiKey);
+// =====================================================
+// 🔒 [V3] Debug Route — ซ่อนใน Production
+// =====================================================
+// ปัญหาเดิม: /api/debug/info เปิดให้ทุกคนเข้าดูได้ใน Production
+// ความเสี่ยง: เปิดเผยข้อมูลภายใน (API Key status, Provider config)
+//   → Attacker ใช้ข้อมูลนี้ในขั้น Reconnaissance ก่อนโจมตี
+// แก้ไข: แสดง Debug route เฉพาะเมื่อ NODE_ENV !== 'production'
+// วิธีตั้งค่าใน Render.com: Environment Variables → NODE_ENV = production
+// อ้างอิง: OWASP A05:2021 - Security Misconfiguration
+if (process.env.NODE_ENV !== 'production') {
+  app.get('/api/debug/info', async (req, res) => {
+    const apiKey = process.env.TWELVE_DATA_API_KEY || 'none';
+    const isDemo = apiKey === 'demo';
+    const maskedKey = isDemo ? 'demo' : (apiKey.length > 4 ? apiKey.substring(0, 4) + '...' : apiKey);
 
-  const testSymbol = 'PTT';
-  const tdSymbol = formatTwelveDataSymbol(testSymbol);
+    const testSymbol = 'PTT';
+    const tdSymbol = formatTwelveDataSymbol(testSymbol);
 
-  let quoteResult = null;
-  try {
-    quoteResult = await fetchTwelveDataQuote(testSymbol);
-  } catch (err) {
-    quoteResult = { error: err.message };
-  }
+    let quoteResult = null;
+    try {
+      quoteResult = await fetchTwelveDataQuote(testSymbol);
+    } catch (err) {
+      quoteResult = { error: err.message };
+    }
 
-  res.json({
-    apiKeyStatus: apiKey ? 'Present' : 'Missing',
-    maskedKey,
-    isDemo,
-    tdSymbolTest: { input: testSymbol, output: tdSymbol },
-    quoteTest: quoteResult
+    res.json({
+      apiKeyStatus: apiKey ? 'Present' : 'Missing',
+      maskedKey,
+      isDemo,
+      tdSymbolTest: { input: testSymbol, output: tdSymbol },
+      quoteTest: quoteResult
+    });
   });
-});
+  console.log('[Server] 🔧 Debug route /api/debug/info enabled (development mode)');
+} else {
+  console.log('[Server] 🔒 Debug route /api/debug/info DISABLED (production mode)');
+}
 
 // NOTE: Removed global circuit breaker middleware - each route now handles fallback to TwelveData individually
 
@@ -922,14 +1087,76 @@ const getDividendHistory = async (req, res) => {
 // === Section 6: Routes                              ===
 // ======================================================
 
+// =====================================================
+// 🔒 [V4] Input Validation Middleware
+// =====================================================
+// ปัญหาเดิม: ค่า ticker จาก URL ถูกนำไปใช้โดยไม่ตรวจสอบ
+//   เช่น /api/stock/<script>alert(1)</script>
+//   → อาจถูก reflect กลับใน error message (XSS)
+//   → อาจทำให้ Yahoo/TwelveData API error (ส่ง request แปลกๆ)
+//   → อาจเป็น Path Traversal: /api/stock/../../etc/passwd
+//
+// แก้ไข: ตรวจสอบ format ด้วย Regex ก่อนส่งต่อ
+//   - อนุญาตเฉพาะ: A-Z, a-z, 0-9, จุด (.), ขีด (-)
+//   - ความยาว 1-20 ตัวอักษร
+//   - ครอบคลุม Ticker ทุกตลาด: AAPL, PTT.BK, 2222.SR, NESN.SW
+// อ้างอิง: OWASP A03:2021 - Injection
+// อ้างอิง: CWE-20 (Improper Input Validation)
+
+const TICKER_REGEX = /^[A-Za-z0-9.\-]{1,20}$/;
+
+const validateTicker = (req, res, next) => {
+  const ticker = req.params.ticker;
+
+  // ขั้น 1: ตรวจ format — ต้องตรง Regex เท่านั้น
+  if (!ticker || !TICKER_REGEX.test(ticker)) {
+    return res.status(400).json({
+      error: 'Invalid ticker format. Use 1-20 alphanumeric characters, dots, or hyphens only.'
+    });
+  }
+
+  // ขั้น 2: Normalize — แปลงเป็นตัวพิมพ์ใหญ่ ป้องกัน case-sensitive bypass
+  req.params.ticker = ticker.trim().toUpperCase();
+
+  // ขั้น 3: ป้องกัน SSRF / Path Traversal
+  // Block patterns ที่อาจเป็น URL, path, หรือ special characters
+  // แม้ Regex ข้างบนจะกรองส่วนใหญ่แล้ว แต่เป็น Defense in Depth
+  const blocked = ['HTTP', 'HTTPS', '..', '//', '\\'];
+  const upper = req.params.ticker;
+  if (blocked.some(pattern => upper.includes(pattern))) {
+    return res.status(400).json({
+      error: 'Ticker contains forbidden patterns.'
+    });
+  }
+
+  next(); // ✅ ผ่านทุกขั้น → ส่งต่อไป Route Handler
+};
+
+// --- Date Validation Middleware ---
+// ตรวจสอบ query params startDate/endDate ว่าเป็น format YYYY-MM-DD
+// ป้องกัน: SQL Injection-style attacks ผ่าน date parameters
+//          แม้เราไม่ใช้ DB แต่ค่าผิดอาจทำให้ buildDateRange() crash
+const validateDateParams = (req, res, next) => {
+  const { startDate, endDate } = req.query;
+  const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+  if (startDate && !ISO_DATE.test(startDate)) {
+    return res.status(400).json({ error: 'Invalid startDate format. Use YYYY-MM-DD.' });
+  }
+  if (endDate && !ISO_DATE.test(endDate)) {
+    return res.status(400).json({ error: 'Invalid endDate format. Use YYYY-MM-DD.' });
+  }
+  next();
+};
+
 /* added: helper to catch & log route registration errors so we can see the offending path */
-function safeRegister(method, routePath, handler) {
+function safeRegister(method, routePath, ...handlers) {
   try {
     if (typeof app[method] !== 'function') {
       console.error(`[Route] Unknown method: ${method} for path: ${routePath}`);
       return;
     }
-    app[method](routePath, handler);
+    app[method](routePath, ...handlers);
     console.log(`[Route] Registered ${method.toUpperCase()} ${routePath}`);
   } catch (err) {
     console.error(`[Route] Failed to register ${method.toUpperCase()} ${routePath}:`, err && err.message ? err.message : err);
@@ -937,10 +1164,12 @@ function safeRegister(method, routePath, handler) {
   }
 }
 
-/* replace direct app.get(...) with safeRegister(...) */
-safeRegister('get', '/api/stock/:ticker', getStockQuote);
-safeRegister('get', '/api/stock/history/:ticker', getStockHistory);
-safeRegister('get', '/api/stock/dividends/:ticker', getDividendHistory);
+// 🔒 Routes — ตอนนี้ทุก :ticker route ต้องผ่าน validateTicker ก่อน
+// validateTicker ตรวจ format → validateDateParams ตรวจวันที่ → handler ทำงาน
+// ถ้า input ไม่ผ่าน → return 400 Bad Request ทันที (ไม่เรียก handler)
+safeRegister('get', '/api/stock/:ticker', validateTicker, getStockQuote);
+safeRegister('get', '/api/stock/history/:ticker', validateTicker, validateDateParams, getStockHistory);
+safeRegister('get', '/api/stock/dividends/:ticker', validateTicker, validateDateParams, getDividendHistory);
 safeRegister('get', '/api/forex/usd-thb', getUsdThbRate);
 
 // --- Health check route ---
@@ -999,7 +1228,38 @@ if (fs.existsSync(staticPath)) {
   console.log('[Server] Static folder not present — skipping static serving.');
 }
 
+// =====================================================
+// 🔒 [V8] Global Error Handler — ป้องกัน Information Leakage
+// =====================================================
+// ปัญหาเดิม: เมื่อเกิด error ภายใน → error message ดิบถูกส่งกลับ Client
+//   เช่น: "ECONNREFUSED 127.0.0.1:3306" → เปิดเผยว่ามี MySQL อยู่
+//   เช่น: "Cannot read property 'data' of undefined" → เปิดเผย code structure
+// ความเสี่ยง: Attacker ใช้ข้อมูลจาก error messages เพื่อ:
+//   - Mapping internal architecture
+//   - หา Library version ที่มี known vulnerabilities
+// แก้ไข: ส่ง generic error message ไป Client + log เต็มใน server
+// อ้างอิง: OWASP A05:2021 - Security Misconfiguration
+// อ้างอิง: CWE-209 (Generation of Error Message Containing Sensitive Information)
+app.use((err, req, res, _next) => {
+  // Log เต็มใน Server (สำหรับ Developer debug)
+  console.error('[Global Error Handler]', {
+    method: req.method,
+    path: req.path,
+    error: err.message,
+    stack: process.env.NODE_ENV !== 'production' ? err.stack : undefined,
+  });
+
+  // ส่งข้อมูลจำกัดไป Client — ป้องกัน Information Leakage
+  const statusCode = err.status || err.statusCode || 500;
+  res.status(statusCode).json({
+    error: process.env.NODE_ENV === 'production'
+      ? 'An unexpected error occurred. Please try again later.'
+      : err.message,  // Dev mode: แสดง error จริงเพื่อ debug
+  });
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`✅ Yahoo Finance Stock API is running on http://localhost:${PORT}`);
+  console.log(`🔒 Security: Helmet ✅ | CORS Whitelist ✅ | Rate Limit ✅ | Input Validation ✅`);
 });

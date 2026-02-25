@@ -76,7 +76,10 @@ export function loadEnv(envPath) {
                 if (key) {
                     process.env.TWELVE_DATA_API_KEY = key;
                     manuallyLoaded = true;
-                    console.log(`[EnvLoader] Manually extracted key: ${key.substring(0, 4)}...`);
+                    // 🔒 [V5] Security Fix: ไม่แสดง API Key (แม้บางส่วน) ใน logs
+                    // ปัญหาเดิม: แสดง 4 ตัวแรก → ลด brute-force search space
+                    // แก้ไข: แสดงแค่สถานะว่าโหลดสำเร็จหรือไม่
+                    console.log('[EnvLoader] API key successfully loaded.');
                 }
             }
         } catch (e) {
