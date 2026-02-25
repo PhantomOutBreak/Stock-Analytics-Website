@@ -594,7 +594,8 @@ app.set('trust proxy', 1);
 const allowedOrigins = [
   'http://localhost:5173',          // Vite Dev Server (development)
   'http://localhost:7860',          // Backend Dev (development)
-  'https://stock-calculator-yaf0.onrender.com', // Production URL
+  'https://stock-calculator-yaf0.onrender.com', // Backend URL
+  'https://stock-calculator-murex.vercel.app/' //Frontend URL
 ];
 
 app.use(cors({
@@ -605,8 +606,11 @@ app.use(cors({
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-    // ❌ Domain ไม่อยู่ใน whitelist → บล็อก
-    return callback(new Error('Not allowed by CORS'));
+    // ❌ Domain ไม่อยู่ใน whitelist → ไม่ส่ง CORS headers กลับไป
+    // Browser จะ block response ฝั่ง client เอง (ไม่ throw error เข้า Global Error Handler)
+    // Log ไว้เพื่อ debug ว่า origin ไหนที่มาเรียกแล้วถูก block
+    console.warn(`[CORS] Blocked request from origin: ${origin}`);
+    return callback(null, false);
   },
   methods: ['GET'],          // จำกัดเฉพาะ GET (API นี้ไม่มี POST/PUT/DELETE)
   credentials: false,        // ไม่ต้องส่ง cookies (ไม่มี Login)
