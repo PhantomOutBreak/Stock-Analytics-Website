@@ -1,9 +1,10 @@
 # 📈 Stock Analytics Platform
 
-[![Version](https://img.shields.io/badge/version-1.6-blue.svg)](https://github.com/PhantomOutBreak/Stock-Calculator/releases)
+[![Version](https://img.shields.io/badge/version-1.7-blue.svg)](https://github.com/PhantomOutBreak/Stock-Calculator/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org/)
 [![React](https://img.shields.io/badge/react-19-61DAFB.svg)](https://react.dev/)
+[![Security](https://img.shields.io/badge/security-hardened-critical.svg)](https://owasp.org/Top10/)
 
 **Stock Analytics** is a comprehensive web application for stock traders and investors. It combines a powerful trading calculator (Buy/Sell/Stop Loss) with technical analysis tools (Indicators) and deep dividend history analytics.
 
@@ -60,6 +61,7 @@ Deep dive into a company's dividend payouts:
 | **Data Sources** | Yahoo Finance API (Primary), Twelve Data API (Fallback) |
 | **Caching** | JSON File-based In-Memory Cache |
 | **Resilience** | Circuit Breaker Pattern |
+| **Security** | Helmet, CORS Whitelist, Rate Limiting, Input Validation |
 
 ---
 
@@ -87,9 +89,12 @@ Create a `.env` file inside the `Backend/` folder:
 # Backend/.env
 PORT=7860
 TWELVE_DATA_API_KEY=your_api_key_here
+NODE_ENV=development
 ```
 
 > 💡 **Tip:** Get a free API key from [Twelve Data](https://twelvedata.com/) for backup data fetching.
+>
+> 🔒 **Security:** Set `NODE_ENV=production` in your hosting platform (e.g., Render.com) to disable debug routes and enable production error handling.
 
 ### 4. Run Locally (Development)
 
@@ -151,6 +156,22 @@ curl http://localhost:7860/api/stock/history/PTT.BK?startDate=2025-01-01
 
 ---
 
+## 🔒 Security
+
+This application implements multiple layers of security following [OWASP Top 10 (2021)](https://owasp.org/Top10/) guidelines:
+
+| Layer | Implementation | OWASP Reference |
+|-------|---------------|----------------|
+| **HTTP Security Headers** | [Helmet.js](https://helmetjs.github.io/) – CSP, HSTS, X-Frame-Options, X-Content-Type-Options | A05:2021 – Security Misconfiguration |
+| **CORS Whitelist** | Only allows requests from whitelisted origins (localhost + production domain) | CWE-942 – Overly Permissive CORS |
+| **Rate Limiting** | Global: 100 req/15min per IP, API: 30 req/min per IP via `express-rate-limit` | A04:2021 – Insecure Design |
+| **Input Validation** | Ticker regex `^[A-Za-z0-9.\-]{1,20}$` + Date format validation + SSRF pattern blocking | A03:2021 – Injection |
+| **Debug Route Guard** | `/api/debug/info` hidden when `NODE_ENV=production` | A05:2021 – Security Misconfiguration |
+| **Secret Protection** | API keys never logged (even partially); env variables loaded securely | A09:2021 – Logging Failures |
+| **Error Handling** | Generic error messages in production; full details only in server logs | CWE-209 – Sensitive Error Info |
+
+---
+
 ## 📂 Project Structure
 
 ```
@@ -205,6 +226,19 @@ Contributions are welcome! Please follow these steps:
 ---
 
 ## 📋 Changelog
+
+### v1.7 (2026-02-25) - **"Security Hardening" Update**
+- 🔒 **Security Enhancements** (OWASP Top 10 Compliance):
+  - Added **Helmet.js** for automatic HTTP security headers (CSP, HSTS, X-Frame-Options)
+  - Implemented **CORS Whitelist** – only whitelisted origins can call the API
+  - Added **Rate Limiting** – Global (100 req/15min) + API-specific (30 req/min) per IP
+  - Added **Input Validation Middleware** – Ticker format regex + Date format validation
+  - Added **SSRF/Path Traversal Protection** – Blocks dangerous patterns in ticker input
+  - **Debug route** (`/api/debug/info`) now hidden in production (`NODE_ENV=production`)
+  - **API key protection** – Keys are no longer logged, even partially
+  - Added **Global Error Handler** – Generic error messages in production to prevent info leakage
+  - Added **Trust Proxy** setting for correct IP detection behind Render.com reverse proxy
+- 📦 **New Dependencies**: `helmet`, `express-rate-limit`
 
 ### v1.6 (2026-01-26) - **"Stock Analytics" Rebrand & Performance Update**
 - 🎨 **Rebranding**: Renamed from "Stock Calculator" to "Stock Analytics"
